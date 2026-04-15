@@ -1,4 +1,4 @@
-These project is dream of Sim-Racer. Using this script, you can track telemetry of Asseto Corsa and display it on arduino DIY dashboard,showing essential info for racing.Game was tested in Asseto Corsa and on Arduino UNO 4
+SHORT:These project is dream of Sim-Racer. Using this script, you can track telemetry of Asseto Corsa and display it on arduino DIY dashboard,showing essential info for racing.Game was tested in Asseto Corsa and on Arduino UNO 4
 # Sim-Racing Telemetry Dashboard 🏎️📊
 
 An interactive hardware-software system that brings real-time racing data from the simulator (**Assetto Corsa**) to a physical dashboard. This project combines Arduino microprocessing, Python data extraction, and a web interface for a fully immersive racing experience.
