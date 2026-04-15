@@ -1,0 +1,210 @@
+#include <WiFiS3.h>
+#include <LiquidCrystal.h>
+#include <WiFiServer.h>
+
+// LCD (RS, E, D4, D5, D6, D7)
+LiquidCrystal lcd(13, 12, 5, 4, 3, 2);
+
+// Pins for 74HC595 shift register
+const int dataPin = 10;
+const int clockPin = 11;
+const int latchPin = 9;
+
+// Slide switch to toggle speed units (connected between pin 7 and GND)
+const int switchPin = 7;
+
+// WiFi credentials
+const char* ssid = "Aslanov63";
+const char* password = "12345678";
+
+// WiFi server
+WiFiServer server(80);
+
+// Incoming data string
+String inputString = "";
+
+String carModel = "";
+int rpm = 0;
+float speed = 0;
+float highestSpeed = 0;
+String bestLap = "";   // format: "mm:ss:ms"
+String lastLap = "";
+float sessionTimeLeft = 0;
+float distanceTraveled = 0;
+int completedLaps = 0;
+int position = 0;
+int gear = 0;
+
+// LED mapping for non-linear RPM bar
+const byte ledMap[8] = {0, 7, 4, 5, 6, 3, 2, 1};
+
+void setup() {
+  Serial.begin(9600);
+  while (!Serial);  // Wait for Serial Monitor
+
+  lcd.begin(16, 2);
+  lcd.setCursor(0, 0);
+  lcd.print("ASSETO CORSA");
+  lcd.setCursor(0, 1);
+  lcd.print("NOT CONNECTED!");
+
+  pinMode(dataPin, OUTPUT);
+  pinMode(clockPin, OUTPUT);
+  pinMode(latchPin, OUTPUT);
+  pinMode(switchPin, INPUT_PULLUP);
+
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid, password);
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+    if (attempts > 40) {
+      Serial.println("\nFailed to connect.");
+      return;
+    }
+  }
+
+  Serial.println("\nWiFi connected.");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  server.begin();
+  Serial.println("Server started.");
+}
+
+void loop() {
+  // Read serial input from Python
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n') {
+      // Parse format: model|rpm|speed|bestLap|lastLap|timeLeft|distance|laps|pos|gear
+      int sep[9];
+      int lastIndex = -1;
+      bool valid = true;
+
+      for (int i = 0; i < 9; i++) {
+        sep[i] = inputString.indexOf('|', lastIndex + 1);
+        if (sep[i] == -1) {
+          valid = false;
+          break;
+        }
+        lastIndex = sep[i];
+      }
+
+      if (valid) {
+        carModel = inputString.substring(0, sep[0]);
+        rpm = inputString.substring(sep[0] + 1, sep[1]).toInt();
+        speed = inputString.substring(sep[1] + 1, sep[2]).toFloat();
+        bestLap = inputString.substring(sep[2] + 1, sep[3]);
+        lastLap = inputString.substring(sep[3] + 1, sep[4]);
+        sessionTimeLeft = inputString.substring(sep[4] + 1, sep[5]).toFloat();
+        distanceTraveled = inputString.substring(sep[5] + 1, sep[6]).toFloat();
+        completedLaps = inputString.substring(sep[6] + 1, sep[7]).toInt();
+        position = inputString.substring(sep[7] + 1, sep[8]).toInt();
+        gear = inputString.substring(sep[8] + 1).toInt();
+
+        if (speed > highestSpeed) highestSpeed = speed;
+
+        bool isMPH = digitalRead(switchPin) == LOW;
+        float displaySpeed = isMPH ? speed * 0.621371 : speed;
+        String speedUnit = isMPH ? "mph" : "km/h";
+
+        lcd.clear();
+
+        // Line 1: speed centered with dashes
+        String speedStr = String(displaySpeed, 0) + speedUnit;
+        int dashCount1 = (16 - speedStr.length()) / 2;
+        String line1 = "";
+        for (int i = 0; i < dashCount1; i++) line1 += "-";
+        line1 += speedStr;
+        while (line1.length() < 16) line1 += "-";
+        lcd.setCursor(0, 0);
+        lcd.print(line1);
+
+        // Line 2: RPM left, gear right
+        String rpmStr = "RPM:" + String(rpm);
+        String gearStr = "Gear:" + String(gear);
+        int dashCount2 = 16 - rpmStr.length() - gearStr.length();
+        String line2 = rpmStr;
+        for (int i = 0; i < dashCount2; i++) line2 += "-";
+        line2 += gearStr;
+        lcd.setCursor(0, 1);
+        lcd.print(line2);
+
+        // Update LED bar
+        byte leds = rpmToLEDs(rpm);
+        digitalWrite(latchPin, LOW);
+        shiftOut(dataPin, clockPin, MSBFIRST, ~leds);
+        digitalWrite(latchPin, HIGH);
+      }
+
+      inputString = "";
+    } else {
+      inputString += c;
+    }
+  }
+
+  // Handle web client
+  WiFiClient client = server.available();
+  if (client) {
+    while (client.connected()) {
+      if (client.available()) {
+        String request = client.readStringUntil('\r');
+        client.read(); // Consume newline
+
+        // Send telemetry page
+        client.println("HTTP/1.1 200 OK");
+        client.println("Content-Type: text/html");
+        client.println("Connection: close");
+        client.println();
+
+        client.println("<!DOCTYPE HTML><html><head><title>Telemetry</title>");
+        client.println("<meta http-equiv='refresh' content='5'>");
+        client.println("<style>body{font-family:Arial;background:#222;color:#eee;padding:20px;}h2{color:#f04;}</style>");
+        client.println("</head><body>");
+        client.println("<h2>Assetto Corsa Telemetry</h2>");
+
+        client.print("<p><strong>Best Lap:</strong> "); client.print(bestLap); client.println("</p>");
+        client.print("<p><strong>Last Lap:</strong> "); client.print(lastLap); client.println("</p>");
+        client.print("<p><strong>Session Time Left:</strong> "); client.print(sessionTimeLeft, 1); client.println(" s</p>");
+        client.print("<p><strong>Distance Traveled:</strong> "); client.print(distanceTraveled, 1); client.println(" m</p>");
+        client.print("<p><strong>Completed Laps:</strong> "); client.print(completedLaps); client.println("</p>");
+        client.print("<p><strong>Position:</strong> "); client.print(position); client.println("</p>");
+        bool isMPH = digitalRead(switchPin) == LOW;
+        client.print("<p><strong>Highest Speed:</strong> ");
+        client.print(isMPH ? highestSpeed * 0.621371 : highestSpeed, 1);
+        client.println(isMPH ? " mph</p>" : " km/h</p>");
+
+        client.println("</body></html>");
+
+        break;
+      }
+    }
+    delay(1);
+    client.stop();
+  }
+}
+
+// Map RPM to number of active LEDs
+byte rpmToLEDs(int rpm) {
+  int ledCount = 0;
+
+  if (rpm < 2000)        ledCount = 1;
+  else if (rpm < 4000)   ledCount = 2;
+  else if (rpm < 5000)   ledCount = 3;
+  else if (rpm < 6000)   ledCount = 4;
+  else if (rpm < 8000)   ledCount = 5;
+  else if (rpm < 10000)  ledCount = 6;
+  else if (rpm < 12000)  ledCount = 7;
+  else                   ledCount = 8;
+
+  byte leds = 0;
+  for (int i = 0; i < ledCount; i++) {
+    leds |= (1 << ledMap[i]);
+  }
+
+  return leds;
+}
